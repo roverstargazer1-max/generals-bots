@@ -21,25 +21,26 @@ from generals.core import game
 from generals.core.action import compute_valid_move_mask
 
 from common import (
+    OPPONENT_NAME_TO_ID,
+    OPPONENT_NAMES,
     TEACHER_NAME_TO_ID,
     TEACHER_NAMES,
-    action_to_index,
-    action_to_target_probs,
-    expander_target_probs,
-    heuristic_action,
     initialize_policy_network,
     make_initial_states,
     make_state_pool,
+    opponent_action,
+    parse_name_pool,
     random_action,
     resolve_min_generals_distance,
+    teacher_action_targets,
     validate_training_args,
 )
 from network import PolicyValueNetwork, obs_to_array
 
 
 @eqx.filter_jit
-def collect_teacher_batch(states, pool, key, steps, truncation, teacher_id):
-    """Roll out teacher-vs-Random games and collect labels for player 0."""
+def collect_teacher_batch(states, pool, key, steps, truncation, teacher_pool_ids, opponent_pool_ids):
+    """Roll out teacher-vs-opponent games and collect labels for player 0."""
     num_envs = states.armies.shape[0]
 
     def body(carry, _):
@@ -47,39 +48,18 @@ def collect_teacher_batch(states, pool, key, steps, truncation, teacher_id):
         obs_p0 = jax.vmap(lambda s: game.get_observation(s, 0))(states)
         obs_p1 = jax.vmap(lambda s: game.get_observation(s, 1))(states)
 
-        key, teacher_key, random_key = jrandom.split(key, 3)
+        key, teacher_choice_key, opponent_choice_key, teacher_key, opponent_key = jrandom.split(key, 5)
+        teacher_slots = jrandom.randint(teacher_choice_key, (num_envs,), 0, teacher_pool_ids.shape[0])
+        opponent_slots = jrandom.randint(opponent_choice_key, (num_envs,), 0, opponent_pool_ids.shape[0])
+        teacher_ids = teacher_pool_ids[teacher_slots]
+        opponent_ids = opponent_pool_ids[opponent_slots]
         teacher_keys = jrandom.split(teacher_key, num_envs)
-        random_keys = jrandom.split(random_key, num_envs)
-        grid_size = obs_p0.armies.shape[-1]
+        opponent_keys = jrandom.split(opponent_key, num_envs)
 
-        def collect_soft(_):
-            target_probs = jax.vmap(expander_target_probs)(obs_p0)
-            sampled_indices = jax.vmap(lambda k, p: jrandom.categorical(k, jnp.log(p + 1e-8)))(
-                teacher_keys, target_probs
-            )
-            grid_cells = grid_size * grid_size
-            teacher_dirs = sampled_indices // grid_cells
-            teacher_positions = sampled_indices % grid_cells
-            teacher_rows = teacher_positions // grid_size
-            teacher_cols = teacher_positions % grid_size
-            teacher_is_pass = teacher_dirs == 8
-            teacher_is_half = (teacher_dirs >= 4) & (teacher_dirs < 8)
-            teacher_actual_dirs = jnp.where(
-                teacher_is_pass, 0, jnp.where(teacher_is_half, teacher_dirs - 4, teacher_dirs)
-            )
-            teacher_actions = jnp.stack(
-                [teacher_is_pass, teacher_rows, teacher_cols, teacher_actual_dirs, teacher_is_half], axis=1
-            ).astype(jnp.int32)
-            return teacher_actions, target_probs, sampled_indices
-
-        def collect_hard(_):
-            teacher_actions = jax.vmap(lambda k, o: heuristic_action(teacher_id - 1, k, o))(teacher_keys, obs_p0)
-            teacher_indices = jax.vmap(lambda a: action_to_index(a, grid_size))(teacher_actions)
-            target_probs = jax.vmap(lambda a: action_to_target_probs(a, grid_size))(teacher_actions)
-            return teacher_actions, target_probs, teacher_indices
-
-        actions_p0, targets, teacher_indices = jax.lax.cond(teacher_id == 0, collect_soft, collect_hard, None)
-        actions_p1 = jax.vmap(random_action)(random_keys, obs_p1)
+        actions_p0, targets, teacher_indices = jax.vmap(teacher_action_targets)(teacher_ids, teacher_keys, obs_p0)
+        actions_p1 = jax.vmap(lambda i, k, o: opponent_action(i, k, o, random_action))(
+            opponent_ids, opponent_keys, obs_p1
+        )
 
         new_states, infos = jax.vmap(game.step)(states, jnp.stack([actions_p0, actions_p1], axis=1))
         terminated = infos.is_done
@@ -100,7 +80,7 @@ def collect_teacher_batch(states, pool, key, steps, truncation, teacher_id):
 
         obs_arr = jax.vmap(obs_to_array)(obs_p0)
         masks = jax.vmap(lambda o: compute_valid_move_mask(o.armies, o.owned_cells, o.mountains))(obs_p0)
-        return (final_states, key), (obs_arr, masks, targets, teacher_indices, dones, infos.winner)
+        return (final_states, key), (obs_arr, masks, targets, teacher_indices, teacher_ids, dones, infos.winner)
 
     (states, key), batch = jax.lax.scan(body, (states, key), None, length=steps)
     return states, batch, key
@@ -123,14 +103,23 @@ def train_bc_step(network, opt_state, obs, masks, targets, teacher_indices, opti
         logits = jax.vmap(sample_logits)(obs_flat, masks_flat)
         log_probs = jax.nn.log_softmax(logits, axis=-1)
         losses = -jnp.sum(targets_flat * log_probs, axis=-1)
-        accuracy = jnp.mean(jnp.argmax(logits, axis=-1) == teacher_indices_flat)
-        return jnp.mean(losses), accuracy
+        top3_indices = jax.lax.top_k(logits, 3)[1]
+        top1_accuracy = jnp.mean(top3_indices[:, 0] == teacher_indices_flat)
+        top3_accuracy = jnp.mean(jnp.any(top3_indices == teacher_indices_flat[:, None], axis=-1))
+        target_log_probs = jnp.where(targets_flat > 0.0, jnp.log(targets_flat + 1e-8), 0.0)
+        kl = jnp.mean(
+            jnp.sum(
+                jnp.where(targets_flat > 0.0, targets_flat * (target_log_probs - log_probs), 0.0),
+                axis=-1,
+            )
+        )
+        return jnp.mean(losses), (top1_accuracy, top3_accuracy, kl)
 
-    (loss, accuracy), grads = eqx.filter_value_and_grad(loss_fn, has_aux=True)(network)
+    (loss, (top1_accuracy, top3_accuracy, kl)), grads = eqx.filter_value_and_grad(loss_fn, has_aux=True)(network)
     params = eqx.filter(network, eqx.is_inexact_array)
     updates, opt_state = optimizer.update(grads, opt_state, params)
     network = eqx.apply_updates(network, updates)
-    return network, opt_state, loss, accuracy
+    return network, opt_state, loss, top1_accuracy, top3_accuracy, kl
 
 
 def parse_args():
@@ -139,6 +128,16 @@ def parse_args():
     parser.add_argument("--grid-size", type=int, default=8)
     parser.add_argument("--map-generator", choices=("simple", "generated"), default="generated")
     parser.add_argument("--teacher", choices=TEACHER_NAMES, default="expander-soft")
+    parser.add_argument(
+        "--teacher-pool",
+        default=None,
+        help="Comma-separated teacher pool. Overrides --teacher when provided.",
+    )
+    parser.add_argument(
+        "--opponent-pool",
+        default="random",
+        help="Comma-separated opponent pool drawn per environment.",
+    )
     parser.add_argument("--num-steps", type=int, default=32)
     parser.add_argument("--num-iterations", type=int, default=200)
     parser.add_argument("--lr", type=float, default=1e-3)
@@ -162,6 +161,19 @@ def parse_args():
     args = parser.parse_args()
 
     validate_training_args(parser, args)
+    try:
+        args.teacher_pool_names, args.teacher_pool_ids = parse_name_pool(
+            args.teacher_pool if args.teacher_pool is not None else args.teacher,
+            TEACHER_NAME_TO_ID,
+            "teacher",
+        )
+        args.opponent_pool_names, args.opponent_pool_ids = parse_name_pool(
+            args.opponent_pool,
+            OPPONENT_NAME_TO_ID,
+            "opponent",
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
     return args
 
 
@@ -171,7 +183,8 @@ def main():
 
     print("Behavior cloning from heuristic teacher")
     print(f"Device:        {jax.devices()[0]}")
-    print(f"Teacher:       {args.teacher}")
+    print(f"Teachers:      {', '.join(args.teacher_pool_names)}")
+    print(f"Opponents:     {', '.join(args.opponent_pool_names)}")
     print(f"Environments:  {args.num_envs}")
     print(f"Grid:          {args.grid_size}x{args.grid_size} ({args.map_generator})")
     print(f"Iterations:    {args.num_iterations} x {args.num_steps} steps")
@@ -202,15 +215,16 @@ def main():
 
     for iteration in range(args.num_iterations):
         t0 = time.time()
-        states, (obs, masks, targets, teacher_indices, dones, winners), key = collect_teacher_batch(
+        states, (obs, masks, targets, teacher_indices, teacher_ids, dones, winners), key = collect_teacher_batch(
             states,
             pool,
             key,
             args.num_steps,
             args.truncation,
-            TEACHER_NAME_TO_ID[args.teacher],
+            args.teacher_pool_ids,
+            args.opponent_pool_ids,
         )
-        network, opt_state, loss, accuracy = train_bc_step(
+        network, opt_state, loss, top1_accuracy, top3_accuracy, kl = train_bc_step(
             network,
             opt_state,
             obs,
@@ -224,13 +238,22 @@ def main():
         if iteration % 10 == 0 or iteration == args.num_iterations - 1:
             episodes = int(dones.sum())
             wins = int(jnp.sum(dones & (winners == 0)))
+            teacher_counts = jnp.bincount(teacher_ids.reshape(-1), length=len(TEACHER_NAMES))
+            teacher_samples = ", ".join(
+                f"{name}:{int(teacher_counts[idx])}"
+                for name, idx in TEACHER_NAME_TO_ID.items()
+                if int(teacher_counts[idx]) > 0
+            )
             elapsed = time.time() - t0
             samples = args.num_envs * args.num_steps
             print(
                 f"Iter {iteration:4d} | Loss: {float(loss):.4f} | "
-                f"Acc: {float(accuracy) * 100:5.1f}% | "
+                f"Top1: {float(top1_accuracy) * 100:5.1f}% | "
+                f"Top3: {float(top3_accuracy) * 100:5.1f}% | "
+                f"KL: {float(kl):.4f} | "
                 f"Episodes: {episodes:4d} | Teacher wins: {wins:4d} | "
-                f"SPS: {samples / elapsed:8.0f} | Time: {elapsed:.2f}s"
+                f"SPS: {samples / elapsed:8.0f} | Time: {elapsed:.2f}s | "
+                f"Teachers: {teacher_samples}"
             )
 
     eqx.tree_serialise_leaves(args.model_path, network)

@@ -27,6 +27,26 @@ OPPONENT_NAMES = ("random",) + HEURISTIC_NAMES
 OPPONENT_NAME_TO_ID = {name: idx for idx, name in enumerate(OPPONENT_NAMES)}
 
 
+def parse_name_pool(value, name_to_id, label):
+    """Parse a comma-separated pool of known strategy names."""
+    raw_names = value.split(",") if isinstance(value, str) else list(value)
+    names = tuple(name.strip() for name in raw_names if name.strip())
+    if not names:
+        raise ValueError(f"{label} pool cannot be empty")
+
+    unknown = [name for name in names if name not in name_to_id]
+    if unknown:
+        known = ", ".join(name_to_id)
+        raise ValueError(f"Unknown {label} pool item(s): {', '.join(unknown)}. Available: {known}")
+
+    duplicates = sorted({name for name in names if names.count(name) > 1})
+    if duplicates:
+        raise ValueError(f"Duplicate {label} pool item(s): {', '.join(duplicates)}")
+
+    ids = jnp.array([name_to_id[name] for name in names], dtype=jnp.int32)
+    return names, ids
+
+
 def initialize_policy_network(network_cls, key, grid_size, init_model_path=None):
     """Create a policy network, optionally loading weights from an .eqx checkpoint."""
     network = network_cls(key, grid_size=grid_size)
@@ -170,6 +190,24 @@ def action_to_target_probs(action, grid_size):
     grid_cells = grid_size * grid_size
     index = action_to_index(action, grid_size)
     return jax.nn.one_hot(index, 9 * grid_cells, dtype=jnp.float32)
+
+
+def teacher_action_targets(teacher_id, key, obs):
+    """Dispatch a behavior-cloning teacher and return action, target distribution, and sampled index."""
+    grid_size = obs.armies.shape[-1]
+
+    def collect_soft(_):
+        target_probs = expander_target_probs(obs)
+        sampled_index = jrandom.categorical(key, jnp.log(target_probs + 1e-8))
+        return index_to_action(sampled_index, grid_size), target_probs, sampled_index
+
+    def collect_hard(_):
+        action = heuristic_action(teacher_id - 1, key, obs)
+        index = action_to_index(action, grid_size)
+        target_probs = action_to_target_probs(action, grid_size)
+        return action, target_probs, index
+
+    return jax.lax.cond(teacher_id == 0, collect_soft, collect_hard, None)
 
 
 def opponent_action(opponent_id, key, obs, random_action_fn):

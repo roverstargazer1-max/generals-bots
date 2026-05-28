@@ -7,11 +7,16 @@ import pytest
 from argparse import ArgumentParser, Namespace
 
 from examples._experimental.ppo.common import (
+    OPPONENT_NAME_TO_ID,
+    TEACHER_NAME_TO_ID,
     initialize_policy_network,
     make_initial_states,
+    make_state_pool,
+    parse_name_pool,
     resolve_min_generals_distance,
     validate_training_args,
 )
+from examples._experimental.ppo.behavior_clone import collect_teacher_batch
 from generals.core import game
 from generals.agents.ppo_policy_agent import PolicyValueNetwork
 
@@ -85,3 +90,63 @@ def test_make_initial_states_spreads_pool_indices():
 
     assert states.armies.shape == (2, 4, 4)
     assert states.pool_idx.tolist() == [2, 3]
+
+
+def test_parse_name_pool_returns_unique_ids():
+    names, ids = parse_name_pool("expander-soft, balanced", TEACHER_NAME_TO_ID, "teacher")
+
+    assert names == ("expander-soft", "balanced")
+    assert ids.tolist() == [TEACHER_NAME_TO_ID["expander-soft"], TEACHER_NAME_TO_ID["balanced"]]
+
+
+def test_parse_name_pool_rejects_invalid_values():
+    with pytest.raises(ValueError, match="cannot be empty"):
+        parse_name_pool("", TEACHER_NAME_TO_ID, "teacher")
+    with pytest.raises(ValueError, match="Unknown teacher"):
+        parse_name_pool("missing", TEACHER_NAME_TO_ID, "teacher")
+    with pytest.raises(ValueError, match="Duplicate opponent"):
+        parse_name_pool("random,random", OPPONENT_NAME_TO_ID, "opponent")
+
+
+def test_collect_teacher_batch_accepts_teacher_and_opponent_pools():
+    key = jrandom.PRNGKey(0)
+    pool = make_state_pool(
+        key,
+        4,
+        4,
+        "simple",
+        (0.0, 0.0),
+        (2, 2),
+        3,
+        None,
+        (40, 41),
+    )
+    states = make_initial_states(pool, 2)
+    teacher_ids = jnp.array(
+        [TEACHER_NAME_TO_ID["expander-soft"], TEACHER_NAME_TO_ID["expander"]],
+        dtype=jnp.int32,
+    )
+    opponent_ids = jnp.array(
+        [OPPONENT_NAME_TO_ID["random"], OPPONENT_NAME_TO_ID["balanced"]],
+        dtype=jnp.int32,
+    )
+
+    next_states, (obs, masks, targets, indices, sampled_teacher_ids, dones, winners), _ = collect_teacher_batch(
+        states,
+        pool,
+        key,
+        2,
+        20,
+        teacher_ids,
+        opponent_ids,
+    )
+
+    jax.block_until_ready(obs)
+    assert next_states.armies.shape == (2, 4, 4)
+    assert obs.shape[:2] == (2, 2)
+    assert masks.shape[:2] == (2, 2)
+    assert targets.shape[:2] == (2, 2)
+    assert indices.shape == (2, 2)
+    assert sampled_teacher_ids.shape == (2, 2)
+    assert dones.shape == (2, 2)
+    assert winners.shape == (2, 2)
