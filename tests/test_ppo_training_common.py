@@ -17,6 +17,7 @@ from examples._experimental.ppo.common import (
     validate_training_args,
 )
 from examples._experimental.ppo.behavior_clone import collect_teacher_batch
+from examples._experimental.ppo.train import rollout_step
 from generals.core import game
 from generals.agents.ppo_policy_agent import PolicyValueNetwork
 
@@ -150,3 +151,38 @@ def test_collect_teacher_batch_accepts_teacher_and_opponent_pools():
     assert sampled_teacher_ids.shape == (2, 2)
     assert dones.shape == (2, 2)
     assert winners.shape == (2, 2)
+
+
+def test_rollout_step_accepts_opponent_pool():
+    key = jrandom.PRNGKey(1)
+    network = PolicyValueNetwork(key, grid_size=4)
+    pool = make_state_pool(
+        key,
+        4,
+        4,
+        "simple",
+        (0.0, 0.0),
+        (2, 2),
+        3,
+        None,
+        (40, 41),
+    )
+    states = make_initial_states(pool, 2)
+    opponent_ids = jnp.array(
+        [OPPONENT_NAME_TO_ID["random"], OPPONENT_NAME_TO_ID["expander"]],
+        dtype=jnp.int32,
+    )
+
+    next_states, data, _ = rollout_step(states, pool, network, key, 20, opponent_ids)
+    obs, masks, actions, logprobs, values, rewards, dones, infos = data
+
+    jax.block_until_ready(next_states.armies)
+    assert next_states.armies.shape == (2, 4, 4)
+    assert obs.shape[:2] == (2, 9)
+    assert masks.shape == (2, 4, 4, 4)
+    assert actions.shape == (2, 5)
+    assert logprobs.shape == (2,)
+    assert values.shape == (2,)
+    assert rewards.shape == (2,)
+    assert dones.shape == (2,)
+    assert infos.winner.shape == (2,)
