@@ -150,6 +150,7 @@ uv run python examples/_experimental/ppo/train.py 64 \
   --num-steps 64 \
   --num-iterations 10 \
   --pool-size 512 \
+  --opponent-pool random,expander,city-rush,balanced \
   --model-path /tmp/generals-ppo-8x8-generated.eqx
 ```
 
@@ -163,8 +164,12 @@ uv run python examples/_experimental/ppo/behavior_clone.py 128 \
   --num-steps 32 \
   --num-iterations 2000 \
   --lr 0.0007 \
+  --teacher-pool expander-soft,expander,city-rush,balanced \
+  --opponent-pool random,expander,balanced \
   --model-path /tmp/generals-bc-8x8-soft.eqx
 ```
+
+BC 日志会输出 `Top1`、`Top3`、`KL` 和本批次 per-teacher 样本数。BC 主要用于 warm start，不应把 imitation accuracy 当成最终强度指标。
 
 从已有 checkpoint 继续 finetune：
 
@@ -177,6 +182,12 @@ uv run python examples/_experimental/ppo/train.py 128 \
 
 `--init-model-path` 只加载网络权重，不恢复 optimizer state、PRNG key 或 iteration，因此这是 finetune，不是完整 resume。输入和输出 checkpoint 的 `--grid-size` 必须一致。
 
+推荐迭代路线：
+
+1. 用 `behavior_clone.py` 从多个 heuristic teacher 做 warm start。
+2. 用 `train.py --init-model-path ... --opponent-pool ...` 对 heuristic opponent pool 做 PPO finetune。
+3. 用 `evaluate_policy.py --opponent-pool ...` 在独立地图 seed 上评估，再决定是否继续训练。
+
 批量评估 checkpoint：
 
 ```bash
@@ -186,9 +197,12 @@ uv run python examples/_experimental/ppo/evaluate_policy.py /tmp/generals-bc-8x8
   --grid-size 8 \
   --map-generator generated \
   --max-steps 500 \
-  --opponent random \
-  --policy-mode sample
+  --opponent-pool random,expander,city-rush,balanced \
+  --policy-mode sample \
+  --csv-path /tmp/generals-eval.csv
 ```
+
+评估会按 opponent 输出 win rate、decisive win rate、draw rate 和 mean final time。后续比较 checkpoint 时，应优先看多 opponent suite 的评估结果，而不是单一 teacher 的 BC top-1。
 
 ## 验证
 

@@ -370,6 +370,8 @@ uv run python examples/_experimental/ppo/train.py 64 \
 - `--map-generator simple|generated`：空地图或带 terrain 的地图。
 - `--pool-size`：预生成 reset state 数量，必须至少等于并行环境数量。
 - `--truncation`：单局最大步数。
+- `--opponent`：单一训练对手，默认 `random`。
+- `--opponent-pool`：逗号分隔的训练对手池；设置后优先于 `--opponent`，每个环境会随机抽取对手。
 - `--mountain-density-min/max`：mountain 密度范围。
 - `--num-cities-min/max`：city 数量范围。
 - `--min-generals-distance`：双方 general 最小距离；未设置时训练脚本会取 `max(3, grid_size // 2)`。
@@ -386,6 +388,7 @@ uv run python examples/_experimental/ppo/train.py 64 \
 JAX_PLATFORMS=cuda XLA_PYTHON_CLIENT_PREALLOCATE=false \
 uv run python examples/_experimental/ppo/train.py 128 \
   --grid-size 8 \
+  --opponent-pool random,expander,city-rush,balanced \
   --map-generator generated \
   --mountain-density-min 0.12 \
   --mountain-density-max 0.22 \
@@ -417,8 +420,12 @@ uv run python examples/_experimental/ppo/behavior_clone.py 128 \
   --num-steps 32 \
   --num-iterations 2000 \
   --lr 0.0007 \
+  --teacher-pool expander-soft,expander,city-rush,balanced \
+  --opponent-pool random,expander,balanced \
   --model-path /tmp/generals-bc-8x8-soft.eqx
 ```
+
+`--teacher` 保留单 teacher 兼容路径；`--teacher-pool` 设置后会覆盖它，并在每个环境中随机抽 teacher。`--opponent-pool` 用于增加采样时对手的多样性，目前支持 `random` 和内置 heuristic。BC 日志中的 `Top1`、`Top3` 和 `KL` 只表示模仿 teacher 的程度，不等价于真实对战强度。
 
 输出模型默认建议放在 `/tmp` 或其他实验目录，不要直接提交 `.eqx` checkpoint。
 
@@ -427,9 +434,12 @@ BC warm start 后继续 PPO finetune 的典型命令：
 ```bash
 uv run python examples/_experimental/ppo/train.py 128 \
   --grid-size 8 \
+  --opponent-pool random,expander,city-rush,balanced \
   --init-model-path /tmp/generals-bc-8x8-soft.eqx \
   --model-path /tmp/generals-ppo-8x8-finetuned.eqx
 ```
+
+推荐的迭代路线是：先用多 teacher BC 做 warm start，再用 PPO 对 heuristic opponent pool finetune，随后用多 opponent suite 在独立地图 seed 上评估。BC 是让策略快速脱离随机初始行为的预训练阶段，后续提升应主要依赖 PPO/self-play 和独立评估结果。
 
 ### 7.6 批量评估 checkpoint
 
@@ -442,20 +452,21 @@ uv run python examples/_experimental/ppo/evaluate_policy.py /tmp/generals-bc-8x8
   --grid-size 8 \
   --map-generator generated \
   --max-steps 500 \
-  --opponent random \
-  --policy-mode sample
+  --opponent-pool random,expander,city-rush,balanced \
+  --policy-mode sample \
+  --csv-path /tmp/generals-eval.csv
 ```
 
 关键输出：
 
-- `Wins/Losses/Draws`
-- `Win rate`
-- `Decisive win rate`
-- `Draw rate`
-- `Mean final time`
-- `Eval seconds`
+- 每个 opponent 的 `Wins/Losses/Draws`
+- `WinRate`
+- `Decisive`
+- `DrawRate`
+- `MeanTime`
+- `Seconds`
 
-实验结论应优先基于多 seed、多批次评估，而不是单次训练日志。
+如果设置 `--csv-path`，脚本会输出稳定列名的 CSV，便于后续报告画柱状图或折线图。实验结论应优先基于多 opponent、多 seed、多批次评估，而不是单次训练日志或 BC top-1 accuracy。
 
 ### 7.7 可视化训练好的策略
 
