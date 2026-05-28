@@ -42,6 +42,47 @@ def initialize_policy_network(network_cls, key, grid_size, init_model_path=None)
         raise ValueError(f"Failed to load initial checkpoint for grid_size={grid_size}: {path}") from exc
 
 
+def resolve_min_generals_distance(grid_size, min_generals_distance):
+    """Return the explicit or default minimum distance between generals."""
+    if min_generals_distance is None:
+        return max(3, grid_size // 2)
+    return min_generals_distance
+
+
+def validate_training_args(parser, args, num_envs=None, require_pool_size=True):
+    """Validate common grid, generated-map, and pool-size arguments."""
+    env_count = args.num_envs if num_envs is None and hasattr(args, "num_envs") else num_envs
+    if args.grid_size < 4:
+        parser.error("--grid-size must be at least 4")
+    if require_pool_size and env_count is not None and args.pool_size < env_count:
+        parser.error("--pool-size must be at least num_envs")
+    if hasattr(args, "mountain_density_min") and not (0.0 <= args.mountain_density_min <= args.mountain_density_max <= 1.0):
+        parser.error("mountain density must satisfy 0 <= min <= max <= 1")
+    if hasattr(args, "num_cities_min") and not (2 <= args.num_cities_min <= args.num_cities_max):
+        parser.error("city count must satisfy 2 <= min <= max")
+    if hasattr(args, "city_army_min") and args.city_army_min >= args.city_army_max:
+        parser.error("city army range must satisfy min < max")
+
+
+def random_action(key, obs):
+    """Random valid action."""
+    mask = compute_valid_move_mask(obs.armies, obs.owned_cells, obs.mountains)
+    valid = jnp.argwhere(mask, size=mask.size, fill_value=-1)
+    num_valid = jnp.sum(jnp.all(valid >= 0, axis=-1))
+
+    k1, k2 = jrandom.split(key)
+    idx = jrandom.randint(k1, (), 0, jnp.maximum(num_valid, 1))
+    move = jnp.where(
+        num_valid > 0,
+        valid[idx],
+        jnp.array([0, 0, 0], dtype=jnp.int32),
+    )
+    should_pass = num_valid == 0
+    is_half = jrandom.randint(k2, (), 0, 2)
+
+    return jnp.array([should_pass, move[0], move[1], move[2], is_half], dtype=jnp.int32)
+
+
 def make_simple_general_grid(key, grid_size):
     """Create an empty square grid with two random generals."""
     grid = jnp.zeros((grid_size, grid_size), dtype=jnp.int32)
@@ -106,6 +147,14 @@ def make_state_pool(
         castle_val_range,
     )
     return jax.vmap(game.create_initial_state)(grids)
+
+
+def make_initial_states(pool, num_envs):
+    """Take initial states from the pool and spread future reset indices."""
+    states = jax.tree.map(lambda x: x[:num_envs], pool)
+    pool_size = pool.armies.shape[0]
+    pool_idx = (jnp.arange(num_envs, dtype=jnp.int32) + num_envs) % pool_size
+    return states._replace(pool_idx=pool_idx)
 
 
 def action_to_index(action, grid_size):

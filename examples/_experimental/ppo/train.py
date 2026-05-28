@@ -17,83 +17,21 @@ import jax.random as jrandom
 import equinox as eqx
 import optax
 
-from generals.core.action import compute_valid_move_mask
 from generals.core import game
-from generals.core.grid import generate_grid
 from generals.core.rewards import composite_reward_fn
 
-from common import OPPONENT_NAME_TO_ID, OPPONENT_NAMES, initialize_policy_network, opponent_action
+from common import (
+    OPPONENT_NAME_TO_ID,
+    OPPONENT_NAMES,
+    initialize_policy_network,
+    make_initial_states,
+    make_state_pool,
+    opponent_action,
+    random_action,
+    resolve_min_generals_distance,
+    validate_training_args,
+)
 from network import PolicyValueNetwork, obs_to_array
-
-
-def random_action(key, obs):
-    """Random valid action."""
-    mask = compute_valid_move_mask(obs.armies, obs.owned_cells, obs.mountains)
-    valid = jnp.argwhere(mask, size=mask.size, fill_value=-1)
-    num_valid = jnp.sum(jnp.all(valid >= 0, axis=-1))
-
-    k1, k2 = jrandom.split(key)
-
-    idx = jrandom.randint(k1, (), 0, jnp.maximum(num_valid, 1))
-    move = jnp.where(
-        num_valid > 0,
-        valid[idx],
-        jnp.array([0, 0, 0], dtype=jnp.int32),
-    )
-    should_pass = num_valid == 0
-    is_half = jrandom.randint(k2, (), 0, 2)
-
-    return jnp.array([should_pass, move[0], move[1], move[2], is_half], dtype=jnp.int32)
-
-
-def make_simple_general_grid(key, grid_size):
-    """Create an empty square grid with two random generals."""
-    grid = jnp.zeros((grid_size, grid_size), dtype=jnp.int32)
-    idx = jrandom.choice(key, grid_size * grid_size, shape=(2,), replace=False)
-    pos_a = (idx[0] // grid_size, idx[0] % grid_size)
-    pos_b = (idx[1] // grid_size, idx[1] % grid_size)
-    return grid.at[pos_a].set(1).at[pos_b].set(2)
-
-
-def make_state_pool(
-    key,
-    pool_size,
-    grid_size,
-    map_generator,
-    mountain_density_range,
-    num_cities_range,
-    min_generals_distance,
-    max_generals_distance,
-    castle_val_range,
-):
-    """Generate a reusable pool of initial states for auto-reset."""
-    keys = jrandom.split(key, pool_size)
-
-    if map_generator == "simple":
-        grids = jax.vmap(lambda k: make_simple_general_grid(k, grid_size))(keys)
-    else:
-        grids = jax.vmap(
-            lambda k: generate_grid(
-                k,
-                grid_dims=(grid_size, grid_size),
-                pad_to=grid_size,
-                mountain_density_range=mountain_density_range,
-                num_cities_range=num_cities_range,
-                min_generals_distance=min_generals_distance,
-                max_generals_distance=max_generals_distance,
-                castle_val_range=castle_val_range,
-            )
-        )(keys)
-
-    return jax.vmap(game.create_initial_state)(grids)
-
-
-def make_initial_states(pool, num_envs):
-    """Take initial states from the pool and spread future reset indices."""
-    states = jax.tree.map(lambda x: x[:num_envs], pool)
-    pool_size = pool.armies.shape[0]
-    pool_idx = (jnp.arange(num_envs, dtype=jnp.int32) + num_envs) % pool_size
-    return states._replace(pool_idx=pool_idx)
 
 
 @eqx.filter_jit
@@ -270,20 +208,9 @@ def main():
     num_iterations = args.num_iterations
     lr = args.lr
     grid_size = args.grid_size
-    min_generals_distance = args.min_generals_distance
-    if min_generals_distance is None:
-        min_generals_distance = max(3, grid_size // 2)
+    min_generals_distance = resolve_min_generals_distance(grid_size, args.min_generals_distance)
 
-    if grid_size < 4:
-        parser.error("--grid-size must be at least 4")
-    if args.pool_size < num_envs:
-        parser.error("--pool-size must be at least num_envs")
-    if not (0.0 <= args.mountain_density_min <= args.mountain_density_max <= 1.0):
-        parser.error("mountain density must satisfy 0 <= min <= max <= 1")
-    if not (2 <= args.num_cities_min <= args.num_cities_max):
-        parser.error("city count must satisfy 2 <= min <= max")
-    if not (args.city_army_min < args.city_army_max):
-        parser.error("city army range must satisfy min < max")
+    validate_training_args(parser, args, num_envs)
     
     print("JAX PPO (Raw Game API - Max Performance)")
     print(f"Environments:  {num_envs}")

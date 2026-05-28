@@ -28,10 +28,13 @@ from common import (
     expander_target_probs,
     heuristic_action,
     initialize_policy_network,
+    make_initial_states,
     make_state_pool,
+    random_action,
+    resolve_min_generals_distance,
+    validate_training_args,
 )
 from network import PolicyValueNetwork, obs_to_array
-from train import random_action
 
 
 @eqx.filter_jit
@@ -130,14 +133,6 @@ def train_bc_step(network, opt_state, obs, masks, targets, teacher_indices, opti
     return network, opt_state, loss, accuracy
 
 
-def make_initial_states(pool, num_envs):
-    """Take initial states from the pool and spread future reset indices."""
-    states = jax.tree.map(lambda x: x[:num_envs], pool)
-    pool_size = pool.armies.shape[0]
-    pool_idx = (jnp.arange(num_envs, dtype=jnp.int32) + num_envs) % pool_size
-    return states._replace(pool_idx=pool_idx)
-
-
 def parse_args():
     parser = argparse.ArgumentParser(description="Behavior-clone the experimental PPO policy from heuristic teachers.")
     parser.add_argument("num_envs", nargs="?", type=int, default=512)
@@ -166,24 +161,13 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
-    if args.grid_size < 4:
-        parser.error("--grid-size must be at least 4")
-    if args.pool_size < args.num_envs:
-        parser.error("--pool-size must be at least num_envs")
-    if not (0.0 <= args.mountain_density_min <= args.mountain_density_max <= 1.0):
-        parser.error("mountain density must satisfy 0 <= min <= max <= 1")
-    if not (2 <= args.num_cities_min <= args.num_cities_max):
-        parser.error("city count must satisfy 2 <= min <= max")
-    if args.city_army_min >= args.city_army_max:
-        parser.error("city army range must satisfy min < max")
+    validate_training_args(parser, args)
     return args
 
 
 def main():
     args = parse_args()
-    min_generals_distance = args.min_generals_distance
-    if min_generals_distance is None:
-        min_generals_distance = max(3, args.grid_size // 2)
+    min_generals_distance = resolve_min_generals_distance(args.grid_size, args.min_generals_distance)
 
     print("Behavior cloning from heuristic teacher")
     print(f"Device:        {jax.devices()[0]}")

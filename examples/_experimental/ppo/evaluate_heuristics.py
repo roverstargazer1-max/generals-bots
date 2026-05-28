@@ -19,8 +19,7 @@ import jax.random as jrandom
 from generals.agents._heuristic_logic import HEURISTIC_NAME_TO_ID, HEURISTIC_NAMES, heuristic_action
 from generals.core import game
 
-from common import OPPONENT_NAME_TO_ID, OPPONENT_NAMES, make_grids, opponent_action
-from train import random_action
+from common import OPPONENT_NAME_TO_ID, OPPONENT_NAMES, make_grids, opponent_action, random_action, resolve_min_generals_distance
 
 
 @eqx.filter_jit
@@ -88,9 +87,7 @@ def parse_args():
 
 def main():
     args = parse_args()
-    min_generals_distance = args.min_generals_distance
-    if min_generals_distance is None:
-        min_generals_distance = max(3, args.grid_size // 2)
+    min_generals_distance = resolve_min_generals_distance(args.grid_size, args.min_generals_distance)
 
     key = jrandom.PRNGKey(args.seed)
     key, map_key, eval_key = jrandom.split(key, 3)

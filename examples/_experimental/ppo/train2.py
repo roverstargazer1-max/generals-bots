@@ -23,31 +23,11 @@ import jax.random as jrandom
 import optax
 
 from generals.core import game
-from generals.core.action import compute_valid_move_mask
 from generals.core.env import GeneralsEnv
 from generals.core.rewards import composite_reward_fn
 
-from common import initialize_policy_network
+from common import initialize_policy_network, random_action, resolve_min_generals_distance, validate_training_args
 from network import PolicyValueNetwork, obs_to_array
-
-
-def random_action(key, obs):
-    """Random valid action."""
-    mask = compute_valid_move_mask(obs.armies, obs.owned_cells, obs.mountains)
-    valid = jnp.argwhere(mask, size=mask.size, fill_value=-1)
-    num_valid = jnp.sum(jnp.all(valid >= 0, axis=-1))
-
-    k1, k2 = jrandom.split(key)
-    idx = jrandom.randint(k1, (), 0, jnp.maximum(num_valid, 1))
-    move = jnp.where(
-        num_valid > 0,
-        valid[idx],
-        jnp.array([0, 0, 0], dtype=jnp.int32),
-    )
-    should_pass = num_valid == 0
-    is_half = jrandom.randint(k2, (), 0, 2)
-
-    return jnp.array([should_pass, move[0], move[1], move[2], is_half], dtype=jnp.int32)
 
 
 def _rollout_step_inner(states, pool, env, network, key):
@@ -242,20 +222,9 @@ def main():
     args = parser.parse_args()
 
     grid_size = args.grid_size
-    min_generals_distance = args.min_generals_distance
-    if min_generals_distance is None:
-        min_generals_distance = max(3, grid_size // 2)
+    min_generals_distance = resolve_min_generals_distance(grid_size, args.min_generals_distance)
 
-    if grid_size < 4:
-        parser.error("--grid-size must be at least 4")
-    if args.pool_size < args.num_envs:
-        parser.error("--pool-size must be at least num_envs")
-    if not (0.0 <= args.mountain_density_min <= args.mountain_density_max <= 1.0):
-        parser.error("mountain density must satisfy 0 <= min <= max <= 1")
-    if not (2 <= args.num_cities_min <= args.num_cities_max):
-        parser.error("city count must satisfy 2 <= min <= max")
-    if not (args.city_army_min < args.city_army_max):
-        parser.error("city army range must satisfy min < max")
+    validate_training_args(parser, args)
 
     print("JAX PPO (GeneralsEnv API)")
     print(f"Environments:  {args.num_envs}")
