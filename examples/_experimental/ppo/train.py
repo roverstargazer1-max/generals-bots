@@ -22,7 +22,7 @@ from generals.core import game
 from generals.core.grid import generate_grid
 from generals.core.rewards import composite_reward_fn
 
-from common import OPPONENT_NAME_TO_ID, OPPONENT_NAMES, opponent_action
+from common import OPPONENT_NAME_TO_ID, OPPONENT_NAMES, initialize_policy_network, opponent_action
 from network import PolicyValueNetwork, obs_to_array
 
 
@@ -257,6 +257,11 @@ def main():
     )
     parser.add_argument("--city-army-min", type=int, default=40, help="Generated city minimum starting army.")
     parser.add_argument("--city-army-max", type=int, default=51, help="Generated city maximum starting army.")
+    parser.add_argument(
+        "--init-model-path",
+        default=None,
+        help="Optional .eqx checkpoint to finetune from. Optimizer state is not restored.",
+    )
     parser.add_argument("--model-path", default="jax_ppo_model.eqx", help="Path where the trained model is saved.")
     args = parser.parse_args()
 
@@ -290,12 +295,14 @@ def main():
         print(f"Cities:        {args.num_cities_min}-{args.num_cities_max}")
         print(f"General dist:  min={min_generals_distance}, max={args.max_generals_distance}")
     print(f"Reset pool:    {args.pool_size}")
+    if args.init_model_path:
+        print(f"Init model:    {args.init_model_path}")
     print()
     
     # Initialize
     key = jrandom.PRNGKey(42)
     key, net_key = jrandom.split(key)
-    network = PolicyValueNetwork(net_key, grid_size=grid_size)
+    network = initialize_policy_network(PolicyValueNetwork, net_key, grid_size, args.init_model_path)
     optimizer = optax.adam(lr)
     params = eqx.filter(network, eqx.is_inexact_array)
     opt_state = optimizer.init(params)

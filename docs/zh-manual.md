@@ -373,7 +373,10 @@ uv run python examples/_experimental/ppo/train.py 64 \
 - `--mountain-density-min/max`：mountain 密度范围。
 - `--num-cities-min/max`：city 数量范围。
 - `--min-generals-distance`：双方 general 最小距离；未设置时训练脚本会取 `max(3, grid_size // 2)`。
+- `--init-model-path`：可选输入 checkpoint，用于从已有 `.eqx` 网络权重开始 finetune。
 - `--model-path`：Equinox `.eqx` checkpoint 保存路径。
+
+`--init-model-path` 只恢复网络权重，不恢复 optimizer state、PRNG key 或 iteration，因此它是 finetune，不是完整 resume。输入 checkpoint 和本次训练的 `--grid-size` 必须一致。
 
 ### 7.4 GPU 训练命令模板
 
@@ -418,6 +421,15 @@ uv run python examples/_experimental/ppo/behavior_clone.py 128 \
 ```
 
 输出模型默认建议放在 `/tmp` 或其他实验目录，不要直接提交 `.eqx` checkpoint。
+
+BC warm start 后继续 PPO finetune 的典型命令：
+
+```bash
+uv run python examples/_experimental/ppo/train.py 128 \
+  --grid-size 8 \
+  --init-model-path /tmp/generals-bc-8x8-soft.eqx \
+  --model-path /tmp/generals-ppo-8x8-finetuned.eqx
+```
 
 ### 7.6 批量评估 checkpoint
 

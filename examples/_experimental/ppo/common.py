@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.random as jrandom
@@ -22,6 +25,21 @@ TEACHER_NAMES = ("expander-soft",) + HEURISTIC_NAMES
 TEACHER_NAME_TO_ID = {name: idx for idx, name in enumerate(TEACHER_NAMES)}
 OPPONENT_NAMES = ("random",) + HEURISTIC_NAMES
 OPPONENT_NAME_TO_ID = {name: idx for idx, name in enumerate(OPPONENT_NAMES)}
+
+
+def initialize_policy_network(network_cls, key, grid_size, init_model_path=None):
+    """Create a policy network, optionally loading weights from an .eqx checkpoint."""
+    network = network_cls(key, grid_size=grid_size)
+    if init_model_path is None:
+        return network
+
+    path = Path(init_model_path)
+    if not path.exists():
+        raise FileNotFoundError(f"Initial model checkpoint not found: {path}")
+    try:
+        return eqx.tree_deserialise_leaves(path, network)
+    except Exception as exc:
+        raise ValueError(f"Failed to load initial checkpoint for grid_size={grid_size}: {path}") from exc
 
 
 def make_simple_general_grid(key, grid_size):

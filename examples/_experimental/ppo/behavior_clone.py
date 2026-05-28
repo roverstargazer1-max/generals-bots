@@ -27,6 +27,7 @@ from common import (
     action_to_target_probs,
     expander_target_probs,
     heuristic_action,
+    initialize_policy_network,
     make_state_pool,
 )
 from network import PolicyValueNetwork, obs_to_array
@@ -156,6 +157,11 @@ def parse_args():
     parser.add_argument("--max-generals-distance", type=int, default=None)
     parser.add_argument("--city-army-min", type=int, default=40)
     parser.add_argument("--city-army-max", type=int, default=51)
+    parser.add_argument(
+        "--init-model-path",
+        default=None,
+        help="Optional .eqx checkpoint to finetune from. Optimizer state is not restored.",
+    )
     parser.add_argument("--model-path", default="/tmp/generals-bc-8x8.eqx")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
@@ -186,11 +192,13 @@ def main():
     print(f"Grid:          {args.grid_size}x{args.grid_size} ({args.map_generator})")
     print(f"Iterations:    {args.num_iterations} x {args.num_steps} steps")
     print(f"Reset pool:    {args.pool_size}")
+    if args.init_model_path:
+        print(f"Init model:    {args.init_model_path}")
     print()
 
     key = jrandom.PRNGKey(args.seed)
     key, net_key, pool_key = jrandom.split(key, 3)
-    network = PolicyValueNetwork(net_key, grid_size=args.grid_size)
+    network = initialize_policy_network(PolicyValueNetwork, net_key, args.grid_size, args.init_model_path)
     optimizer = optax.adam(args.lr)
     opt_state = optimizer.init(eqx.filter(network, eqx.is_inexact_array))
 

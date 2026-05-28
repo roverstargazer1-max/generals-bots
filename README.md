@@ -166,6 +166,17 @@ uv run python examples/_experimental/ppo/behavior_clone.py 128 \
   --model-path /tmp/generals-bc-8x8-soft.eqx
 ```
 
+从已有 checkpoint 继续 finetune：
+
+```bash
+uv run python examples/_experimental/ppo/train.py 128 \
+  --grid-size 8 \
+  --init-model-path /tmp/generals-bc-8x8-soft.eqx \
+  --model-path /tmp/generals-ppo-8x8-finetuned.eqx
+```
+
+`--init-model-path` 只加载网络权重，不恢复 optimizer state、PRNG key 或 iteration，因此这是 finetune，不是完整 resume。输入和输出 checkpoint 的 `--grid-size` 必须一致。
+
 批量评估 checkpoint：
 
 ```bash
