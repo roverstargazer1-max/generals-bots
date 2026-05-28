@@ -26,7 +26,7 @@ from generals.core import game
 from generals.core.env import GeneralsEnv
 from generals.core.rewards import composite_reward_fn
 
-from common import initialize_policy_network, random_action, resolve_min_generals_distance, validate_training_args
+from common import initialize_policy_network, random_action, resolve_min_generals_distance, validate_training_args,compute_valid_move_mask
 from network import PolicyValueNetwork, obs_to_array
 
 
